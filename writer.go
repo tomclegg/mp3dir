@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 )
 
@@ -15,42 +14,34 @@ const (
 	finishedFilenameFormat = "t%d.mp3"
 )
 
-// Writer implements io.WriteCloser by writing files to an mp3dir.
+// Writer implements io.WriteCloser by appending to an mp3dir.
 type Writer struct {
-	Dir            string
+	MP3Dir
 	SplitOnSize    int64
 	SplitOnSilence time.Duration
 	PurgeOnSize    int64
 	OnCloseError   func(error)
 
+	loaded      bool
 	current     io.WriteCloser
 	currentSize int64
 	lastWrite   time.Time
 	err         error
-
-	loaded     bool
-	onDisk     []segment
-	onDiskSize int64
-}
-
-type segment struct {
-	unixts int64
-	size   int64
 }
 
 // Write implements io.Writer.
 func (w *Writer) Write(p []byte) (int, error) {
-	if !loaded {
+	if !w.loaded {
 		w.timestampCurrent()
 		err := w.loadDirState()
 		if err != nil {
 			return 0, err
 		}
-		loaded = true
+		w.loaded = true
 	}
 	w.open(len(p))
 	if w.err != nil {
-		return 0, err
+		return 0, w.err
 	}
 	n, err := w.current.Write(p)
 	w.currentSize += int64(n)
@@ -61,6 +52,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 // Close implements io.Closer
 func (w *Writer) Close() error {
 	w.closeCurrent()
+	return w.err
 }
 
 // open a new file if necessary. If an error occurs, w.err will be
@@ -68,7 +60,7 @@ func (w *Writer) Close() error {
 // writing size bytes.
 func (w *Writer) open(size int) {
 	switch {
-	case w.writer == nil:
+	case w.current == nil:
 		// never opened (or last open failed)
 	case w.err != nil:
 		// last open failed
@@ -81,54 +73,34 @@ func (w *Writer) open(size int) {
 		return
 	}
 	w.closeCurrent()
-	w.err = w.timestampCurrent()
+	err := w.timestampCurrent()
+	if w.err == nil {
+		w.err = err
+	}
 	if w.err != nil {
 		return
 	}
-	w.writer, w.err = os.OpenFile(filepath.Join(w.Dir, currentFilename), os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0777)
+	w.current, w.err = os.OpenFile(filepath.Join(w.Root, currentFilename), os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0777)
 }
 
 func (w *Writer) closeCurrent() {
-	if w.writer == nil {
+	if w.current == nil {
 		return
 	}
-	if err := w.current.Close(); err != nil {
+	if w.err = w.current.Close(); w.err != nil {
 		if w.OnCloseError == nil {
-			log.Printf("error closing segment: %s (writer %v)", err, w.current)
+			log.Printf("error closing segment: %s (writer %v)", w.err, w.current)
 		} else {
-			w.OnCloseError(err)
+			w.OnCloseError(w.err)
 		}
 	}
-	w.writer = nil
+	w.current = nil
 	w.currentSize = 0
-}
-
-func (w *Writer) loadDirState() {
-	dir, err := os.Open(w.Dir)
-	if err != nil {
-		return err
-	}
-	fis, err := dir.Readdir(0)
-	if err != nil {
-		return err
-	}
-	w.onDisk = nil
-	for _, fi := range fis {
-		var unixts int
-		if n, err := fmt.Sscanf(fi.Name(), finishedFilenameFormat, &unixts); err != nil {
-			continue
-		}
-		w.onDisk = append(w.onDisk, segment{unixts: unixts, size: fi.Size()})
-		w.onDiskSize += fi.Size()
-	}
-	sort.Slice(w.onDisk, func(i, j int) bool {
-		return w.onDisk[i].unixts < w.onDisk[j].unixts
-	})
 }
 
 // rename current.mp3 to t%d.mp3 and purge
 func (w *Writer) timestampCurrent() error {
-	oldname := filepath.Join(w.Dir, currentFilename)
+	oldname := filepath.Join(w.Root, currentFilename)
 	fi, err := os.Stat(oldname)
 	if os.IsNotExist(err) {
 		return nil
@@ -136,19 +108,20 @@ func (w *Writer) timestampCurrent() error {
 		return err
 	}
 	unixts := fi.ModTime().Unix()
-	err := os.Rename(oldname, filepath.Join(w.Dir, fmt.Sprintf(finishedFilenameFormat, unixts)))
+	err = os.Rename(oldname, filepath.Join(w.Root, fmt.Sprintf(finishedFilenameFormat, unixts)))
 	if err != nil {
 		return err
 	}
 	w.onDisk = append(w.onDisk, segment{unixts: unixts, size: fi.Size()})
+	w.onDiskSize += fi.Size()
 	return w.purge()
 }
 
 func (w *Writer) purge() error {
 	var err error
 	purged := 0
-	for len(w.onDisk) > 0 && w.onDiskSize > w.PurgeOnSize {
-		err = os.Remove(filepath.Join(w.Dir, fmt.Sprintf(finishedFilenameFormat, w.onDisk[purged].unixts)))
+	for len(w.onDisk) > purged && w.onDiskSize > w.PurgeOnSize {
+		err = os.Remove(filepath.Join(w.Root, fmt.Sprintf(finishedFilenameFormat, w.onDisk[purged].unixts)))
 		if err != nil {
 			break
 		}
