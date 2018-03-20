@@ -118,6 +118,9 @@ func (w *Writer) timestampCurrent() error {
 }
 
 func (w *Writer) purge() error {
+	if w.PurgeOnSize <= 0 {
+		return nil
+	}
 	var err error
 	purged := 0
 	for len(w.onDisk) > purged && w.onDiskSize > w.PurgeOnSize {
