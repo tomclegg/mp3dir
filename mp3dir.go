@@ -2,8 +2,8 @@ package mp3dir
 
 import (
 	"fmt"
-	"io"
 	"log"
+	"net/http"
 	"os"
 	"sort"
 	"sync"
@@ -23,15 +23,14 @@ type MP3Dir struct {
 	onDisk     []segment
 	onDiskSize int64
 
-	refresh   *time.Ticker
-	setupOnce sync.Once
+	refresh *time.Ticker
 	sync.Mutex
 }
 
-func (md *MP3Dir) NewReaderAt(start time.Time, max time.Duration) (io.ReadCloser, error) {
-	md.refreshDirState()
+func (md *MP3Dir) ReaderAt(start time.Time, max time.Duration) (http.File, error) {
 	md.Lock()
 	defer md.Unlock()
+	md.refreshDirState()
 
 	var startts, endts int64
 	startts = start.Unix()
@@ -43,16 +42,12 @@ func (md *MP3Dir) NewReaderAt(start time.Time, max time.Duration) (io.ReadCloser
 	var want []segment
 	done := false
 	for _, seg := range md.onDisk {
-		if seg.unixts <= startts {
+		if seg.unixts <= startts || seg.size == 0 {
 			continue
 		} else if seg.unixts < endts {
 			want = append(want, seg)
 		} else {
-			// want part of this segment
-			seg.size -= (seg.unixts - endts) * int64(md.BitRate) / 8
-			if seg.size > 0 {
-				want = append(want, seg)
-			}
+			want = append(want, seg)
 			done = true
 			break
 		}
@@ -61,23 +56,43 @@ func (md *MP3Dir) NewReaderAt(start time.Time, max time.Duration) (io.ReadCloser
 		// TODO: consider current.mp3
 		log.Printf("TODO: consider current.mp3")
 	}
-	return &reader{root: md.Root, segments: want}, nil
+	if len(want) == 0 {
+		return nil, os.ErrNotExist
+	}
+	skip := want[0].size - (want[0].unixts-startts)*int64(md.BitRate)/8
+	if skip < 0 {
+		skip = 0
+	}
+	want[len(want)-1].size -= (want[len(want)-1].unixts - endts) * int64(md.BitRate) / 8
+	// TODO: advance skip to start of next mp3 frame
+	return &reader{
+		root:     md.Root,
+		name:     fmt.Sprintf("%d-%d.mp3", startts, endts),
+		modtime:  time.Unix(want[len(want)-1].unixts, 0),
+		segments: want,
+		skip:     skip,
+	}, nil
 }
 
+// caller must have lock.
 func (md *MP3Dir) refreshDirState() error {
-	var err error
-	md.setupOnce.Do(func() {
+	if md.refresh == nil {
+		err := md.loadDirState()
+		if err != nil {
+			return err
+		}
 		md.refresh = time.NewTicker(5 * time.Second)
-		err = md.loadDirState()
-	})
+		return nil
+	}
 	select {
 	case <-md.refresh.C:
-		err = md.loadDirState()
+		return md.loadDirState()
 	default:
+		return nil
 	}
-	return err
 }
 
+// caller must have lock.
 func (md *MP3Dir) loadDirState() error {
 	dir, err := os.Open(md.Root)
 	if err != nil {

@@ -31,12 +31,17 @@ type Writer struct {
 
 // Write implements io.Writer.
 func (w *Writer) Write(p []byte) (int, error) {
+	w.MP3Dir.Lock()
+	defer w.MP3Dir.Unlock()
 	if !w.loaded {
+		// TODO: acquire a lockfile to ensure no other process
+		// is changing w.Root underneath us.
 		w.timestampCurrent()
-		err := w.loadDirState()
+		err := w.refreshDirState()
 		if err != nil {
 			return 0, err
 		}
+		w.MP3Dir.refresh.Stop()
 		w.loaded = true
 	}
 	w.open(len(p))
