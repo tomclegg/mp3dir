@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -59,7 +58,6 @@ func (r *reader) Read(p []byte) (int, error) {
 	n := 0
 	for n == 0 && r.err == nil {
 		if r.current == nil {
-			log.Printf("r.segments==%#v", r.segments)
 			if len(r.segments) == 0 {
 				r.err = io.EOF
 				break
