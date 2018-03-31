@@ -38,8 +38,12 @@ func (md *MP3Dir) Open(name string) (http.File, error) {
 		}
 		buf := &bytes.Buffer{}
 		err := json.NewEncoder(buf).Encode(struct {
+			BitRate   int       `json:"bitRate"`
 			Intervals [][]int64 `json:"intervals"`
-		}{intervals})
+		}{
+			BitRate:   md.BitRate,
+			Intervals: intervals,
+		})
 		return &memFile{
 			ReadSeeker: bytes.NewReader(buf.Bytes()),
 			name:       "index.json",
