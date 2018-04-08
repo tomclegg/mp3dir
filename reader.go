@@ -23,6 +23,8 @@ type reader struct {
 	skip     int64
 
 	seek    int64
+	segoff  int64
+	started bool
 	current io.ReadCloser
 	err     error
 }
@@ -54,7 +56,10 @@ func (r *reader) Seek(offset int64, whence int) (int64, error) {
 
 // Read from the current/next segment.
 func (r *reader) Read(p []byte) (int, error) {
-	r.seek += r.skip
+	if !r.started {
+		r.started = true
+		r.segoff = r.skip + r.seek
+	}
 	n := 0
 	for n == 0 && r.err == nil {
 		if r.current == nil {
@@ -64,8 +69,8 @@ func (r *reader) Read(p []byte) (int, error) {
 			}
 			seg := r.segments[0]
 			r.segments = r.segments[1:]
-			if r.seek >= seg.size {
-				r.seek -= seg.size
+			if r.segoff >= seg.size {
+				r.segoff -= seg.size
 				continue
 			}
 			f, err := os.Open(filepath.Join(r.root, fmt.Sprintf(finishedFilenameFormat, seg.unixts)))
@@ -73,19 +78,19 @@ func (r *reader) Read(p []byte) (int, error) {
 				r.err = err
 				break
 			}
-			if r.seek > 0 {
-				_, err = f.Seek(r.seek, io.SeekStart)
+			if r.segoff > 0 {
+				_, err = f.Seek(r.segoff, io.SeekStart)
 				if err != nil {
 					f.Close()
 					r.err = err
 					break
 				}
-				r.seek = 0
 			}
 			r.current = &readCloser{
-				Reader: &io.LimitedReader{R: f, N: seg.size},
+				Reader: &io.LimitedReader{R: f, N: seg.size - r.segoff},
 				Closer: f,
 			}
+			r.segoff = 0
 		}
 		n, r.err = r.current.Read(p)
 		if r.err == io.EOF {

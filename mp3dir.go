@@ -2,12 +2,16 @@ package mp3dir
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/tcolgate/mp3"
 )
 
 type segment struct {
@@ -59,12 +63,38 @@ func (md *MP3Dir) ReaderAt(start time.Time, max time.Duration) (http.File, error
 	if len(want) == 0 {
 		return nil, os.ErrNotExist
 	}
-	skip := want[0].size - (want[0].unixts-startts)*int64(md.BitRate)/8
+	skip := want[0].size - int64((time.Unix(want[0].unixts, 0).Sub(start)).Seconds()*float64(md.BitRate)/8)
 	if skip < 0 {
 		skip = 0
 	}
 	want[len(want)-1].size -= (want[len(want)-1].unixts - endts) * int64(md.BitRate) / 8
-	// TODO: advance skip to start of next mp3 frame
+
+	// advance skip to start of next mp3 frame
+	f, err := os.Open(filepath.Join(md.Root, fmt.Sprintf(finishedFilenameFormat, want[0].unixts)))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	_, err = f.Seek(skip, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+	dec := mp3.NewDecoder(f)
+	var frame mp3.Frame
+	var skipSync int
+	err = dec.Decode(&frame, &skipSync)
+	switch err {
+	case nil:
+		skip += int64(skipSync)
+	case io.EOF:
+		skip, err = f.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, err
+	}
+
 	return &reader{
 		root:     md.Root,
 		name:     fmt.Sprintf("%d-%d.mp3", startts, endts),
