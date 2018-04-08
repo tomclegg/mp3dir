@@ -57,7 +57,6 @@ func (md *MP3Dir) ReaderAt(start time.Time, max time.Duration) (http.File, error
 		}
 	}
 	if !done {
-		// TODO: consider current.mp3
 		log.Printf("TODO: consider current.mp3")
 	}
 	if len(want) == 0 {
@@ -69,29 +68,8 @@ func (md *MP3Dir) ReaderAt(start time.Time, max time.Duration) (http.File, error
 	}
 	want[len(want)-1].size -= (want[len(want)-1].unixts - endts) * int64(md.BitRate) / 8
 
-	// advance skip to start of next mp3 frame
-	f, err := os.Open(filepath.Join(md.Root, fmt.Sprintf(finishedFilenameFormat, want[0].unixts)))
+	skip, err := nextFrameStart(filepath.Join(md.Root, fmt.Sprintf(finishedFilenameFormat, want[0].unixts)), skip)
 	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	_, err = f.Seek(skip, io.SeekStart)
-	if err != nil {
-		return nil, err
-	}
-	dec := mp3.NewDecoder(f)
-	var frame mp3.Frame
-	var skipSync int
-	err = dec.Decode(&frame, &skipSync)
-	switch err {
-	case nil:
-		skip += int64(skipSync)
-	case io.EOF:
-		skip, err = f.Seek(0, io.SeekCurrent)
-		if err != nil {
-			return nil, err
-		}
-	default:
 		return nil, err
 	}
 
@@ -139,4 +117,28 @@ func (md *MP3Dir) loadDirState() error {
 		return md.onDisk[i].unixts < md.onDisk[j].unixts
 	})
 	return nil
+}
+
+func nextFrameStart(filename string, pos int64) (int64, error) {
+	f, err := os.Open(filename)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	_, err = f.Seek(pos, io.SeekStart)
+	if err != nil {
+		return 0, err
+	}
+	dec := mp3.NewDecoder(f)
+	var frame mp3.Frame
+	var skipSync int
+	err = dec.Decode(&frame, &skipSync)
+	switch err {
+	case nil:
+		return pos + int64(skipSync), nil
+	case io.EOF:
+		return f.Seek(0, io.SeekCurrent)
+	default:
+		return 0, err
+	}
 }
