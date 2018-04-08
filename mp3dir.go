@@ -27,7 +27,7 @@ type MP3Dir struct {
 	onDisk     []segment
 	onDiskSize int64
 
-	refresh *time.Ticker
+	nextRefresh time.Time
 	sync.Mutex
 }
 
@@ -106,20 +106,14 @@ func (md *MP3Dir) ReaderAt(start time.Time, max time.Duration) (http.File, error
 
 // caller must have lock.
 func (md *MP3Dir) refreshDirState() error {
-	if md.refresh == nil {
+	if now := time.Now(); now.After(md.nextRefresh) {
 		err := md.loadDirState()
 		if err != nil {
 			return err
 		}
-		md.refresh = time.NewTicker(5 * time.Second)
-		return nil
+		md.nextRefresh = now.Add(5 * time.Second)
 	}
-	select {
-	case <-md.refresh.C:
-		return md.loadDirState()
-	default:
-		return nil
-	}
+	return nil
 }
 
 // caller must have lock.

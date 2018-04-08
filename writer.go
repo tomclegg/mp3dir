@@ -41,7 +41,6 @@ func (w *Writer) Write(p []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		w.MP3Dir.refresh.Stop()
 		w.loaded = true
 	}
 	w.open(len(p))
