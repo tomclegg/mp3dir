@@ -104,7 +104,7 @@ func (md *MP3Dir) loadDirState() error {
 	if err != nil {
 		return err
 	}
-	md.onDisk = nil
+	md.onDisk, md.onDiskSize = nil, 0
 	for _, fi := range fis {
 		var unixts int64
 		if _, err := fmt.Sscanf(fi.Name(), finishedFilenameFormat, &unixts); err != nil {
