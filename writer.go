@@ -22,11 +22,10 @@ type Writer struct {
 	PurgeOnSize    int64
 	OnCloseError   func(error)
 
-	loaded      bool
-	current     io.WriteCloser
-	currentSize int64
-	lastWrite   time.Time
-	err         error
+	loaded    bool
+	current   io.WriteCloser
+	lastWrite time.Time
+	err       error
 }
 
 // Write implements io.Writer.
@@ -48,8 +47,16 @@ func (w *Writer) Write(p []byte) (int, error) {
 		return 0, w.err
 	}
 	n, err := w.current.Write(p)
-	w.currentSize += int64(n)
-	w.lastWrite = time.Now()
+	now := time.Now()
+	w.onDisk[len(w.onDisk)-1].unixts = now.Unix()
+	w.onDisk[len(w.onDisk)-1].size += int64(n)
+	w.onDiskSize += int64(n)
+	w.lastWrite = now
+
+	// Don't bother refreshing state from disk if we're doing the
+	// writing ourselves
+	w.MP3Dir.nextRefresh = w.lastWrite.Add(5 * time.Second)
+
 	return n, err
 }
 
@@ -68,7 +75,7 @@ func (w *Writer) open(size int) {
 		// never opened (or last open failed)
 	case w.err != nil:
 		// last open failed
-	case w.SplitOnSize > 0 && w.currentSize+int64(size) > w.SplitOnSize:
+	case w.SplitOnSize > 0 && w.onDisk[len(w.onDisk)-1].size+int64(size) > w.SplitOnSize:
 		// this write would exceed SplitOnSize
 	case w.SplitOnSilence > 0 && time.Since(w.lastWrite) > w.SplitOnSilence:
 		// reopen after a silent period
@@ -85,6 +92,9 @@ func (w *Writer) open(size int) {
 		return
 	}
 	w.current, w.err = os.OpenFile(filepath.Join(w.Root, currentFilename), os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0777)
+	if w.err == nil {
+		w.onDisk = append(w.onDisk, segment{filename: currentFilename, unixts: time.Now().Unix()})
+	}
 }
 
 func (w *Writer) closeCurrent() {
@@ -99,25 +109,21 @@ func (w *Writer) closeCurrent() {
 		}
 	}
 	w.current = nil
-	w.currentSize = 0
 }
 
 // rename current.mp3 to t%d.mp3 and purge
 func (w *Writer) timestampCurrent() error {
-	oldname := filepath.Join(w.Root, currentFilename)
-	fi, err := os.Stat(oldname)
-	if os.IsNotExist(err) {
+	if len(w.onDisk) == 0 || w.onDisk[len(w.onDisk)-1].filename != currentFilename {
 		return nil
-	} else if err != nil {
-		return err
 	}
-	unixts := fi.ModTime().Unix()
-	err = os.Rename(oldname, filepath.Join(w.Root, fmt.Sprintf(finishedFilenameFormat, unixts)))
+	unixts := w.onDisk[len(w.onDisk)-1].unixts
+	newname := fmt.Sprintf(finishedFilenameFormat, unixts)
+	err := os.Rename(filepath.Join(w.Root, currentFilename), filepath.Join(w.Root, newname))
 	if err != nil {
 		return err
 	}
-	w.onDisk = append(w.onDisk, segment{unixts: unixts, size: fi.Size()})
-	w.onDiskSize += fi.Size()
+	w.onDisk[len(w.onDisk)-1].filename = newname
+	w.onDisk[len(w.onDisk)-1].unixts = unixts
 	return w.purge()
 }
 
@@ -127,8 +133,8 @@ func (w *Writer) purge() error {
 	}
 	var err error
 	purged := 0
-	for len(w.onDisk) > purged && w.onDiskSize > w.PurgeOnSize {
-		err = os.Remove(filepath.Join(w.Root, fmt.Sprintf(finishedFilenameFormat, w.onDisk[purged].unixts)))
+	for len(w.onDisk)-1 > purged && w.onDiskSize+w.SplitOnSize > w.PurgeOnSize {
+		err = os.Remove(filepath.Join(w.Root, w.onDisk[purged].filename))
 		if err != nil {
 			break
 		}

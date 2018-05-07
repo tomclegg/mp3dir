@@ -2,7 +2,6 @@ package mp3dir
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,7 +15,8 @@ type readCloser struct {
 
 // reader implements http.File and os.FileInfo
 type reader struct {
-	root     string
+	md *MP3Dir
+
 	name     string
 	modtime  time.Time
 	segments []segment
@@ -73,7 +73,38 @@ func (r *reader) Read(p []byte) (int, error) {
 				r.segoff -= seg.size
 				continue
 			}
-			f, err := os.Open(filepath.Join(r.root, fmt.Sprintf(finishedFilenameFormat, seg.unixts)))
+			f, err := os.Open(filepath.Join(r.md.Root, seg.filename))
+
+			// Check whether the "current" file was
+			// renamed since we decided to read it. If so,
+			// ignore any error opening current, and open
+			// the renamed file instead.
+			if seg.filename != currentFilename {
+				// no race
+			} else if onDisk, _, errLoad := r.md.loadDirState(); errLoad != nil {
+				err = errLoad
+			} else {
+				// The file we want is the oldest file
+				// whose endtime is >= the endtime the
+				// "current" file had when we decided
+				// to read it.
+				for _, s := range onDisk {
+					if s.unixts < seg.unixts {
+						continue
+					}
+					if s.filename == seg.filename {
+						// no race
+						break
+					}
+					// current.mp3 was renamed
+					if f != nil {
+						f.Close()
+					}
+					f, err = os.Open(filepath.Join(r.md.Root, s.filename))
+					break
+				}
+			}
+
 			if err != nil {
 				r.err = err
 				break
