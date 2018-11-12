@@ -83,6 +83,7 @@ func (w *Writer) open(size int) {
 		// don't need to reopen
 		return
 	}
+	w.err = nil
 	w.closeCurrent()
 	err := w.timestampCurrent()
 	if w.err == nil {
