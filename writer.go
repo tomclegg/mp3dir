@@ -135,8 +135,10 @@ func (w *Writer) purge() error {
 	var err error
 	purged := 0
 	for len(w.onDisk)-1 > purged && w.onDiskSize+w.SplitOnSize > w.PurgeOnSize {
-		err = os.Remove(filepath.Join(w.Root, w.onDisk[purged].filename))
-		if err != nil {
+		target := filepath.Join(w.Root, w.onDisk[purged].filename)
+		err = os.Remove(target)
+		if err != nil && !os.IsNotExist(err) {
+			log.Printf("error removing %s: %s", target, err)
 			break
 		}
 		w.onDiskSize -= w.onDisk[purged].size
